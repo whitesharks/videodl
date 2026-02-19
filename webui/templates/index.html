@@ -65,20 +65,58 @@
     .checkline input{ width:auto; }
     .muted{ color:var(--muted); font-size:12px; }
     .actions{ display:flex; gap:8px; flex-wrap:wrap; }
+
+    /* header right version */
+    .topbar{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+    .versions{ text-align:right; font-size:12px; color:var(--muted); line-height:1.6; }
+    .versions b{ color:var(--text); font-weight:700; }
+
+    /* pagination */
+    .pager{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+    .pager .left{ color:var(--muted); font-size:12px; }
+    .pager .right{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .pager a{ display:inline-block; padding:6px 10px; border-radius:10px; border:1px solid var(--line); background:rgba(255,255,255,.04); }
+    .pager a.disabled{ pointer-events:none; opacity:.45; }
+    .pager .cur{ padding:6px 10px; border-radius:10px; border:1px solid var(--line); background:rgba(255,255,255,.06); color:var(--text); font-size:12px; }
+
+    /* modal */
+    .modal-backdrop{
+      position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; padding:20px;
+    }
+    .modal{
+      width:min(520px, 96vw);
+      background:rgba(16,26,47,.98);
+      border:1px solid var(--line);
+      border-radius:16px;
+      box-shadow:0 20px 60px rgba(0,0,0,.45);
+      padding:16px;
+    }
+    .modal h3{ margin:0 0 8px 0; font-size:16px; }
+    .modal .hint{ color:var(--muted); font-size:12px; line-height:1.6; }
+    .modal .modal-actions{ display:flex; gap:10px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap; }
   </style>
 </head>
 <body>
-  <h1>VideoDL WebUI</h1>
-  <div class="sub">
-    下载目录：<code>{{ download_dir }}</code> |
-    任务目录：<code>{{ tasks_dir }}</code> |
-    运行中：<b>{{ running_count }}</b>/<b>{{ settings.max_concurrent }}</b>
-    <div class="chips">
-      <span class="chip">并发上限：{{ settings.max_concurrent }}</span>
-      <span class="chip">日志保留：{{ settings.log_retention_days }} 天</span>
-      <span class="chip">任务超时：{{ settings.task_timeout }} 秒</span>
-      <span class="chip">代理：{{ settings.proxy_url if settings.proxy_url else "未配置" }}</span>
-      <span class="chip">文件缓存：{{ files_cache_ts|fmt_ts }}</span>
+  <div class="topbar">
+    <div>
+      <h1>VideoDL WebUI</h1>
+      <div class="sub">
+        下载目录：<code>{{ download_dir }}</code> |
+        任务目录：<code>{{ tasks_dir }}</code> |
+        运行中：<b>{{ running_count }}</b>/<b>{{ settings.max_concurrent }}</b>
+        <div class="chips">
+          <span class="chip">并发上限：{{ settings.max_concurrent }}</span>
+          <span class="chip">日志保留：{{ settings.log_retention_days }} 天</span>
+          <span class="chip">任务超时：{{ settings.task_timeout }} 秒</span>
+          <span class="chip">代理：{{ settings.proxy_url if settings.proxy_url else "未配置" }}</span>
+          <span class="chip">文件缓存：{{ files_cache_ts|fmt_ts }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="versions">
+      <div>VideoDL：<b>{{ videodl_version }}</b></div>
+      <div>WebUI：<b>{{ webui_version }}</b></div>
     </div>
   </div>
 
@@ -141,7 +179,7 @@
             <th style="width:140px;">ID</th>
             <th style="width:92px;">状态</th>
             <th>URL</th>
-            <th style="width:190px;">操作</th>
+            <th style="width:160px;">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -168,22 +206,25 @@
             <td>
               <div class="actions">
                 <a class="btn small secondary" href="/tasks/{{ t.id }}">详情</a>
-
-                <form method="post" action="/tasks/{{ t.id }}/delete" onsubmit="return confirm('确定删除任务记录？');" style="display:inline;">
-                  <input type="hidden" name="delete_downloads" value="0" />
-                  <button class="btn small danger" type="submit">删任务</button>
-                </form>
-
-                <form method="post" action="/tasks/{{ t.id }}/delete" onsubmit="return confirm('确定删除任务 + 同时删除该任务下载目录？');" style="display:inline;">
-                  <input type="hidden" name="delete_downloads" value="1" />
-                  <button class="btn small danger" type="submit">删任务+文件</button>
-                </form>
+                <button class="btn small danger" type="button" onclick="openDeleteModal('{{ t.id }}')">删除</button>
               </div>
             </td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
+
+      <div class="pager">
+        <div class="left">共 {{ tasks_total }} 条，当前第 {{ tasks_page }}/{{ tasks_total_pages }} 页</div>
+        <div class="right">
+          <a href="/?task_page=1&file_page={{ files_page }}" class="{{ 'disabled' if tasks_page<=1 else '' }}">首页</a>
+          <a href="/?task_page={{ tasks_page-1 }}&file_page={{ files_page }}" class="{{ 'disabled' if tasks_page<=1 else '' }}">上一页</a>
+          <span class="cur">{{ tasks_page }}</span>
+          <a href="/?task_page={{ tasks_page+1 }}&file_page={{ files_page }}" class="{{ 'disabled' if tasks_page>=tasks_total_pages else '' }}">下一页</a>
+          <a href="/?task_page={{ tasks_total_pages }}&file_page={{ files_page }}" class="{{ 'disabled' if tasks_page>=tasks_total_pages else '' }}">末页</a>
+        </div>
+      </div>
+
       <div class="muted" style="margin-top:10px;">
         并发上限以内任务会自动开始；超过上限的任务会 queued，等待调度。
       </div>
@@ -224,8 +265,44 @@
         </tbody>
       </table>
 
+      <div class="pager">
+        <div class="left">共 {{ files_total }} 条，当前第 {{ files_page }}/{{ files_total_pages }} 页</div>
+        <div class="right">
+          <a href="/?task_page={{ tasks_page }}&file_page=1" class="{{ 'disabled' if files_page<=1 else '' }}">首页</a>
+          <a href="/?task_page={{ tasks_page }}&file_page={{ files_page-1 }}" class="{{ 'disabled' if files_page<=1 else '' }}">上一页</a>
+          <span class="cur">{{ files_page }}</span>
+          <a href="/?task_page={{ tasks_page }}&file_page={{ files_page+1 }}" class="{{ 'disabled' if files_page>=files_total_pages else '' }}">下一页</a>
+          <a href="/?task_page={{ tasks_page }}&file_page={{ files_total_pages }}" class="{{ 'disabled' if files_page>=files_total_pages else '' }}">末页</a>
+        </div>
+      </div>
+
       <div style="height:10px"></div>
       <button class="btn small secondary" onclick="forceRefreshFiles()">立即刷新文件列表</button>
+    </div>
+  </div>
+
+  <!-- Delete modal -->
+  <div id="modalBackdrop" class="modal-backdrop" onclick="onBackdropClick(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>删除任务</h3>
+      <div class="hint">
+        将删除该任务的记录（任务详情/日志）。<br/>
+        如果勾选“同时删除文件”，将递归删除 <code>downloads/&lt;task_id&gt;/</code> 整个目录（包含目录本身）。
+      </div>
+
+      <div class="checkline" style="margin-top:12px;">
+        <input id="deleteFilesChk" type="checkbox" />
+        <label for="deleteFilesChk" style="margin:0; color:var(--text);">同时删除文件（删除整个任务目录）</label>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" onclick="closeDeleteModal()">取消</button>
+        <button class="btn danger" type="button" onclick="submitDelete()">确认删除</button>
+      </div>
+
+      <form id="deleteForm" method="post" style="display:none;">
+        <input id="deleteDownloadsVal" type="hidden" name="delete_downloads" value="0" />
+      </form>
     </div>
   </div>
 
@@ -238,6 +315,34 @@
   }
   // 10分钟自动刷新（解决删除后列表不更新）
   setInterval(forceRefreshFiles, 600000);
+
+  // modal logic
+  let currentDeleteTaskId = "";
+
+  function openDeleteModal(taskId){
+    currentDeleteTaskId = taskId;
+    document.getElementById("deleteFilesChk").checked = false;
+    document.getElementById("modalBackdrop").style.display = "flex";
+  }
+
+  function closeDeleteModal(){
+    document.getElementById("modalBackdrop").style.display = "none";
+    currentDeleteTaskId = "";
+  }
+
+  function onBackdropClick(e){
+    // 点击遮罩关闭
+    closeDeleteModal();
+  }
+
+  function submitDelete(){
+    if(!currentDeleteTaskId) return;
+    const delFiles = document.getElementById("deleteFilesChk").checked;
+    const form = document.getElementById("deleteForm");
+    form.action = `/tasks/${currentDeleteTaskId}/delete`;
+    document.getElementById("deleteDownloadsVal").value = delFiles ? "1" : "0";
+    form.submit();
+  }
 </script>
 </body>
 </html>
