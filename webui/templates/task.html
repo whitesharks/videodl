@@ -85,7 +85,7 @@
     <div style="height:12px"></div>
 
     {% if task.status == "running" or task.status == "queued" %}
-    <form method="post" action="/tasks/{{ task.id }}/stop" onsubmit="return confirm('停止该任务？');">
+    <form method="post" action="/tasks/{{ task.id }}/stop" onsubmit="return confirm('停止该任务？停止后会自动清理临时分片目录（videodl_outputs）。');">
       <button class="btn danger" type="submit">停止任务</button>
     </form>
     {% endif %}
