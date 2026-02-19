@@ -189,7 +189,7 @@ jobs:
             type=raw,value=${{ env.DATE_TAG }}
             type=raw,value=upstream-${{ env.UPSTREAM_SHA_SHORT }}
             type=raw,value=${{ github.event.inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag != '' }}
-            type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event.inputs.push_latest == true }}
+            type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event.inputs.push_latest == 'true' }}
           labels: |
             org.opencontainers.image.source=${{ github.repositoryUrl }}
             org.opencontainers.image.revision=${{ github.sha }}
