@@ -1,0 +1,236 @@
+name: Release Docker (VideoDL WebUI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "额外发布一个自定义 tag（例如 v0.1.0），留空则只推 latest + date + upstreamsha"
+        required: false
+        default: ""
+      upstream_ref:
+        description: "上游 videodl git ref（默认 master；也可填 tag/commit）"
+        required: false
+        default: "master"
+      push_latest:
+        description: "是否推送 latest 标签（手动触发可关闭）"
+        required: false
+        type: boolean
+        default: true
+
+  schedule:
+    # 每周一 03:30 UTC
+    - cron: "30 3 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  # === 修改成你的 Docker Hub 镜像名 ===
+  # 例如：whiteshark/videodl-webui
+  DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/videodl-webui
+
+  PLATFORMS: linux/amd64,linux/arm64
+  UPSTREAM_REPO: CharlesPikachu/videodl
+  WEBUI_PORT: "61771"
+
+jobs:
+  build-and-push:
+    name: Build & Push (multi-arch)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (your fork repo, includes webui/)
+        uses: actions/checkout@v4
+
+      - name: Resolve upstream commit SHA (cache-bust)
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          REF="${{ github.event.inputs.upstream_ref }}"
+          if [ -z "${REF}" ]; then REF="master"; fi
+
+          SHA="$(git ls-remote https://github.com/${{ env.UPSTREAM_REPO }}.git "${REF}" | head -n 1 | awk '{print $1}')"
+          if [ -z "${SHA}" ]; then
+            echo "Failed to resolve upstream ref: ${REF}"
+            exit 1
+          fi
+
+          echo "UPSTREAM_REF=${REF}" >> "$GITHUB_ENV"
+          echo "UPSTREAM_SHA=${SHA}" >> "$GITHUB_ENV"
+          echo "UPSTREAM_SHA_SHORT=${SHA:0:12}" >> "$GITHUB_ENV"
+
+          DATE_TAG="$(date -u +%Y%m%d)"
+          echo "DATE_TAG=${DATE_TAG}" >> "$GITHUB_ENV"
+
+          echo "Upstream: ${{ env.UPSTREAM_REPO }} @ ${REF} (${SHA})"
+
+      - name: Compute requirements fingerprints
+        id: reqs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f requirements.txt
+          test -f webui/requirements-web.txt
+
+          sha_videodl="$(sha256sum requirements.txt | awk '{print $1}')"
+          sha_webui="$(sha256sum webui/requirements-web.txt | awk '{print $1}')"
+
+          echo "REQS_SHA_VIDEODL=${sha_videodl}" >> "$GITHUB_ENV"
+          echo "REQS_SHA_WEBUI=${sha_webui}" >> "$GITHUB_ENV"
+
+          echo "requirements.txt sha256=${sha_videodl}"
+          echo "webui/requirements-web.txt sha256=${sha_webui}"
+
+      - name: Generate Dockerfile (out-of-box WebUI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .github/docker
+
+          cat > .github/docker/Dockerfile <<'EOF'
+          FROM python:3.11-slim
+
+          ARG UPSTREAM_REPO
+          ARG UPSTREAM_SHA
+          ARG WEBUI_PORT
+          ARG REQS_SHA_VIDEODL
+          ARG REQS_SHA_WEBUI
+
+          ENV PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONUNBUFFERED=1 \
+              PORT=${WEBUI_PORT:-61771} \
+              HOST=0.0.0.0 \
+              DOWNLOAD_DIR=/data/downloads \
+              TASKS_DIR=/data/tasks
+
+          # System deps: ffmpeg + node + curl/jq for downloading tools
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+                ffmpeg \
+                ca-certificates \
+                curl \
+                jq \
+                git \
+                nodejs \
+                npm \
+              && rm -rf /var/lib/apt/lists/*
+
+          # Install N_m3u8DL-RE (latest) for amd64/arm64
+          # Note: asset naming may vary across releases; we match common patterns.
+          RUN set -eux; \
+              arch="$(dpkg --print-architecture)"; \
+              case "$arch" in \
+                amd64)  asset_pat='linux.*(x64|amd64)';; \
+                arm64)  asset_pat='linux.*(arm64|aarch64)';; \
+                *) echo "Unsupported arch: $arch"; exit 1;; \
+              esac; \
+              api="https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest"; \
+              url="$(curl -fsSL "$api" | jq -r --arg re "$asset_pat" '.assets[] | select(.name|test($re;"i")) | .browser_download_url' | head -n 1)"; \
+              if [ -z "$url" ] || [ "$url" = "null" ]; then \
+                echo "Failed to resolve N_m3u8DL-RE asset for $arch"; \
+                exit 1; \
+              fi; \
+              echo "Downloading N_m3u8DL-RE: $url"; \
+              mkdir -p /opt/tools; \
+              curl -fsSL "$url" -o /opt/tools/N_m3u8DL-RE; \
+              chmod +x /opt/tools/N_m3u8DL-RE; \
+              ln -sf /opt/tools/N_m3u8DL-RE /usr/local/bin/N_m3u8DL-RE
+
+          # Copy your fork repo (webui + requirements)
+          WORKDIR /opt/app
+          COPY . /opt/app
+
+          # Cache-bust hooks (no-op but forces rebuild when these change)
+          RUN echo "UPSTREAM_REPO=$UPSTREAM_REPO" && echo "UPSTREAM_SHA=$UPSTREAM_SHA" && \
+              echo "REQS_SHA_VIDEODL=$REQS_SHA_VIDEODL" && echo "REQS_SHA_WEBUI=$REQS_SHA_WEBUI"
+
+          # Install upstream videodl from latest commit SHA
+          # Use SHA to guarantee "latest upstream" per workflow resolution.
+          RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+              pip install --no-cache-dir "git+https://github.com/${UPSTREAM_REPO}.git@${UPSTREAM_SHA}"
+
+          # Install extra python deps:
+          # 1) repo root requirements.txt (if you keep extra deps there)
+          # 2) webui requirements
+          RUN if [ -f /opt/app/requirements.txt ]; then pip install --no-cache-dir -r /opt/app/requirements.txt; fi && \
+              if [ -f /opt/app/webui/requirements-web.txt ]; then pip install --no-cache-dir -r /opt/app/webui/requirements-web.txt; fi
+
+          # Prepare runtime dirs (mount points)
+          RUN mkdir -p /data/downloads /data/tasks
+
+          # Run WebUI
+          WORKDIR /opt/app/webui
+          EXPOSE 61771
+
+          # Uvicorn access logs 可按需关：--access-log=false
+          CMD ["python", "app.py"]
+          EOF
+
+          echo "Generated .github/docker/Dockerfile"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_IMAGE }}
+          tags: |
+            type=raw,value=${{ env.DATE_TAG }}
+            type=raw,value=upstream-${{ env.UPSTREAM_SHA_SHORT }}
+            type=raw,value=${{ github.event.inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag != '' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event.inputs.push_latest == true }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=videodl-webui
+            org.opencontainers.image.description=VideoDL + WebUI (out-of-box)
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+
+            io.github.upstream.repo=${{ env.UPSTREAM_REPO }}
+            io.github.upstream.ref=${{ env.UPSTREAM_REF }}
+            io.github.upstream.sha=${{ env.UPSTREAM_SHA }}
+
+            io.github.deps.sha.videodl=${{ env.REQS_SHA_VIDEODL }}
+            io.github.deps.sha.webui=${{ env.REQS_SHA_WEBUI }}
+
+            io.github.webui.port=${{ env.WEBUI_PORT }}
+
+      - name: Build & Push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./.github/docker/Dockerfile
+          push: true
+          platforms: ${{ env.PLATFORMS }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            UPSTREAM_REPO=${{ env.UPSTREAM_REPO }}
+            UPSTREAM_SHA=${{ env.UPSTREAM_SHA }}
+            WEBUI_PORT=${{ env.WEBUI_PORT }}
+            REQS_SHA_VIDEODL=${{ env.REQS_SHA_VIDEODL }}
+            REQS_SHA_WEBUI=${{ env.REQS_SHA_WEBUI }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        shell: bash
+        run: |
+          echo "Image pushed: ${{ env.DOCKERHUB_IMAGE }}"
+          echo "Upstream: ${{ env.UPSTREAM_REPO }} @ ${{ env.UPSTREAM_REF }} (${{ env.UPSTREAM_SHA }})"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}"
+          echo ""
+          echo "Run example:"
+          echo "  docker run -p 61771:61771 -v \$PWD/downloads:/data/downloads -v \$PWD/tasks:/data/tasks ${{ env.DOCKERHUB_IMAGE }}:latest"
