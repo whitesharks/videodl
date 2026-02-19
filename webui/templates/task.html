@@ -5,52 +5,140 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Task {{ task.id }}</title>
   <style>
-    body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial; margin: 24px; }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
-    pre { background:#0b1020; color:#e7e7e7; padding: 12px; border-radius: 12px; overflow:auto; max-height: 70vh; }
-    button { padding: 10px 14px; border:0; border-radius: 10px; cursor:pointer; }
-    .muted { color:#666; font-size: 12px; }
-    a { color: #1b66d1; text-decoration: none; }
+    :root{
+      --bg:#0b1220;
+      --panel:#101a2f;
+      --text:#e8edf7;
+      --muted:#a9b6d0;
+      --line:rgba(255,255,255,.08);
+      --btn:#2b66ff;
+      --danger:#ff4d4f;
+      --chip:#142144;
+    }
+    body{ background:linear-gradient(180deg,#060a14, var(--bg)); color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial; margin:0; padding:24px;}
+    a{ color:#9cc0ff; text-decoration:none; }
+    a:hover{ text-decoration:underline; }
+    .card{ background:rgba(16,26,47,.9); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:0 10px 25px rgba(0,0,0,.25); }
+    .row{ display:grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap:10px; }
+    @media (max-width: 1000px){ .row{ grid-template-columns:1fr; } }
+    .kv{ background:var(--chip); border:1px solid var(--line); border-radius:14px; padding:10px; }
+    .k{ font-size:12px; color:var(--muted); }
+    .v{ font-size:14px; margin-top:4px; word-break:break-all; }
+    .muted{ color:var(--muted); font-size:12px; }
+    .btn{ background:var(--btn); color:white; border:0; border-radius:12px; padding:10px 12px; cursor:pointer; font-weight:700; }
+    .btn.danger{ background:rgba(255,77,79,.14); color:#ffd6d6; border:1px solid rgba(255,77,79,.35); }
+    pre{ background:#0b1020; color:#e7e7e7; padding:12px; border-radius:14px; overflow:auto; max-height:70vh; border:1px solid rgba(255,255,255,.08); }
+    code{ background:rgba(255,255,255,.08); padding:2px 6px; border-radius:8px; }
+    h1{ margin:0 0 12px 0; font-size:20px; }
+    h2{ margin:16px 0 8px 0; font-size:15px; }
   </style>
 </head>
 <body>
   <p><a href="/">← 返回</a></p>
 
   <h1>任务 {{ task.id }}</h1>
+
   <div class="card">
-    <div><b>状态：</b>{{ task.status }}</div>
-    <div><b>URL：</b>{{ task.url }}</div>
-    <div><b>额外参数：</b><code>{{ task.extra_args }}</code></div>
+    <div class="row">
+      <div class="kv">
+        <div class="k">状态</div>
+        <div class="v" id="status">{{ task.status }}</div>
+      </div>
+      <div class="kv">
+        <div class="k">PID</div>
+        <div class="v" id="pid">{{ task.pid }}</div>
+      </div>
+      <div class="kv">
+        <div class="k">退出码</div>
+        <div class="v" id="rc">{{ task.returncode }}</div>
+      </div>
+      <div class="kv">
+        <div class="k">结束时间</div>
+        <div class="v" id="finished">{{ task.finished_at|fmt_ts }}</div>
+      </div>
+    </div>
+
+    <div style="height:10px"></div>
+
+    <div class="muted">URL</div>
+    <div style="word-break:break-all;">{{ task.url }}</div>
+
+    <div style="height:8px"></div>
+    <div class="muted">额外参数</div>
+    <div><code>{{ task.extra_args }}</code></div>
+
+    <div style="height:8px"></div>
+    <div class="muted">是否启用代理</div>
+    <div><code>{{ "Yes" if task.use_proxy else "No" }}</code></div>
+
+    <div style="height:8px"></div>
+    <div class="muted">下载目录</div>
+    <div><code>{{ task.download_dir }}</code></div>
+
+    <div style="height:10px"></div>
     <div class="muted">
-      created_at: {{ task.created_at }} |
-      started_at: {{ task.started_at }} |
-      finished_at: {{ task.finished_at }} |
-      pid: {{ task.pid }} |
-      returncode: {{ task.returncode }}
+      created_at: <span id="created">{{ task.created_at|fmt_ts }}</span> |
+      started_at: <span id="started">{{ task.started_at|fmt_ts }}</span>
     </div>
 
     <div style="height:12px"></div>
 
-    {% if task.status == "running" %}
+    {% if task.status == "running" or task.status == "queued" %}
     <form method="post" action="/tasks/{{ task.id }}/stop" onsubmit="return confirm('停止该任务？');">
-      <button type="submit">停止任务</button>
+      <button class="btn danger" type="submit">停止任务</button>
     </form>
     {% endif %}
   </div>
 
   <h2>日志（自动刷新）</h2>
-  <p class="muted">每 2 秒刷新一次日志尾部。</p>
+  <p class="muted">运行中每 2 秒刷新；结束后自动停止刷新。</p>
   <pre id="log">{{ log_text }}</pre>
 
 <script>
+  let timer = null;
+
+  function isFinished(status){
+    return status === "success" || status === "failed" || status === "stopped";
+  }
+
+  async function refreshMeta(){
+    const resp = await fetch("/tasks/{{ task.id }}/meta", { cache: "no-store" });
+    if (!resp.ok) return null;
+    const m = await resp.json();
+
+    document.getElementById("status").textContent = m.status ?? "";
+    document.getElementById("pid").textContent = (m.pid ?? "");
+    document.getElementById("rc").textContent = (m.returncode ?? "");
+    document.getElementById("finished").textContent = (m.finished_at ? new Date(m.finished_at*1000).toLocaleString() : "");
+    document.getElementById("created").textContent = (m.created_at ? new Date(m.created_at*1000).toLocaleString() : "");
+    document.getElementById("started").textContent = (m.started_at ? new Date(m.started_at*1000).toLocaleString() : "");
+
+    return m;
+  }
+
   async function refreshLog(){
-    const resp = await fetch("/tasks/{{ task.id }}/log");
+    const resp = await fetch("/tasks/{{ task.id }}/log", { cache: "no-store" });
+    if (!resp.ok) return;
     const text = await resp.text();
     const el = document.getElementById("log");
     el.textContent = text.slice(-20000);
     el.scrollTop = el.scrollHeight;
   }
-  setInterval(refreshLog, 2000);
+
+  async function tick(){
+    try{
+      const m = await refreshMeta();
+      await refreshLog();
+      if (m && isFinished(m.status)) {
+        if (timer) clearInterval(timer);
+        timer = null;
+      }
+    }catch(e){}
+  }
+
+  tick();
+  timer = setInterval(tick, 2000);
 </script>
 </body>
 </html>
