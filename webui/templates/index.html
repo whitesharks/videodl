@@ -130,7 +130,7 @@
 
         <label>额外参数（可选）</label>
         <textarea name="extra_args" rows="3" placeholder='例如：-a 2 -g 1 （不建议填写输出路径参数）'></textarea>
-        <div class="muted">参数会拼到 <code>videodl -i URL</code> 后面（已做安全过滤，阻止明显路径逃逸）。</div>
+        <div class="muted">参数会拼到 <code>videodl -i URL</code> 后面（已做安全过滤，阻止明显路径逃逸）。<br/>更多参数使用：详见https://github.com/CharlesPikachu/videodl <br/>本项目Docker镜像：whitesharks/videodl-webui</div>
 
         <div class="checkline">
           <input id="use_proxy" type="checkbox" name="use_proxy" />
@@ -141,7 +141,9 @@
         <button class="btn" type="submit">加入队列 / 开始下载</button>
       </form>
 
-      <div class="line"></div>
+      <br/>
+	  <div class="line"></div>
+	  <br/>
 
       <h2>运行设置</h2>
       <form method="post" action="/settings">
