@@ -5,93 +5,239 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>VideoDL WebUI</title>
   <style>
-    body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial; margin: 24px; }
-    .row { display:flex; gap: 16px; flex-wrap: wrap; }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; min-width: 320px; flex: 1; }
-    input, textarea { width: 100%; padding: 10px; border:1px solid #ccc; border-radius: 10px; }
-    button { padding: 10px 14px; border:0; border-radius: 10px; cursor:pointer; }
-    table { width:100%; border-collapse: collapse; }
-    th, td { text-align:left; padding: 8px; border-bottom:1px solid #eee; }
-    .muted { color:#666; font-size: 12px; }
-    .badge { display:inline-block; padding:2px 8px; border-radius: 999px; background:#f2f2f2; font-size: 12px; }
-    .success { background: #e8f7ee; }
-    .failed { background: #fdecec; }
-    .running { background: #eef6ff; }
+    :root{
+      --bg:#0b1220;
+      --panel:#101a2f;
+      --panel2:#0f1930;
+      --text:#e8edf7;
+      --muted:#a9b6d0;
+      --line:rgba(255,255,255,.08);
+      --btn:#2b66ff;
+      --btn2:#1c2b50;
+      --danger:#ff4d4f;
+      --ok:#22c55e;
+      --warn:#f59e0b;
+      --bad:#ef4444;
+      --chip:#1b2a52;
+      --chip2:#142144;
+    }
+    body{ background:linear-gradient(180deg,#060a14, var(--bg)); color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial; margin:0; padding:24px;}
+    h1{ margin:0 0 12px 0; font-size:22px; }
+    h2{ margin:0 0 10px 0; font-size:16px; color:var(--text); }
+    .sub{ color:var(--muted); font-size:12px; margin-bottom:18px; }
+    code{ background:rgba(255,255,255,.08); padding:2px 6px; border-radius:8px; }
+    .row{ display:grid; grid-template-columns: 1.2fr 1fr 1fr; gap:16px; align-items:start; }
+    @media (max-width: 1100px){ .row{ grid-template-columns:1fr; } }
+    .card{ background:rgba(16,26,47,.9); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:0 10px 25px rgba(0,0,0,.25); }
+    label{ display:block; font-size:12px; color:var(--muted); margin:8px 0 6px; }
+    input, textarea{
+      width:100%; box-sizing:border-box; border-radius:12px; border:1px solid var(--line);
+      background:rgba(255,255,255,.04); color:var(--text); padding:10px;
+      outline:none;
+    }
+    input:focus, textarea:focus{ border-color:rgba(43,102,255,.7); box-shadow:0 0 0 3px rgba(43,102,255,.15); }
+    .btn{ background:var(--btn); color:white; border:0; border-radius:12px; padding:10px 12px; cursor:pointer; font-weight:600; }
+    .btn.secondary{ background:var(--btn2); font-weight:600; }
+    .btn.danger{ background:rgba(255,77,79,.14); color:#ffd6d6; border:1px solid rgba(255,77,79,.35); }
+    .btn.small{ padding:6px 10px; border-radius:10px; font-weight:600; font-size:12px; }
+    .line{ height:1px; background:var(--line); margin:14px 0; }
+    .chips{ display:flex; gap:10px; flex-wrap:wrap; margin:10px 0 0; }
+    .chip{ background:var(--chip); border:1px solid var(--line); padding:6px 10px; border-radius:999px; font-size:12px; color:var(--muted); }
+    .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    @media (max-width: 600px){ .grid2{ grid-template-columns:1fr; } }
+
+    table{ width:100%; border-collapse:collapse; table-layout:fixed; }
+    th,td{ padding:10px 8px; border-bottom:1px solid var(--line); font-size:12px; vertical-align:top; }
+    th{ color:var(--muted); font-weight:600; }
+    .urlcell{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    a{ color:#9cc0ff; text-decoration:none; }
+    a:hover{ text-decoration:underline; }
+
+    .badge{ display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; border:1px solid var(--line); background:var(--chip2); color:var(--muted); }
+    .b-ok{ color:#c8ffe0; background:rgba(34,197,94,.15); border-color:rgba(34,197,94,.35); }
+    .b-run{ color:#d3e6ff; background:rgba(43,102,255,.15); border-color:rgba(43,102,255,.35); }
+    .b-q{ color:#ffe9c7; background:rgba(245,158,11,.14); border-color:rgba(245,158,11,.35); }
+    .b-bad{ color:#ffd1d1; background:rgba(239,68,68,.14); border-color:rgba(239,68,68,.35); }
+    .b-stop{ color:#e6e6e6; background:rgba(255,255,255,.06); border-color:rgba(255,255,255,.12); }
+
+    .checkline{ display:flex; gap:10px; align-items:center; margin-top:10px; }
+    .checkline input{ width:auto; }
+    .muted{ color:var(--muted); font-size:12px; }
+    .actions{ display:flex; gap:8px; flex-wrap:wrap; }
   </style>
 </head>
 <body>
   <h1>VideoDL WebUI</h1>
-  <p class="muted">下载目录：<code>{{ download_dir }}</code></p>
+  <div class="sub">
+    下载目录：<code>{{ download_dir }}</code> |
+    任务目录：<code>{{ tasks_dir }}</code> |
+    运行中：<b>{{ running_count }}</b>/<b>{{ settings.max_concurrent }}</b>
+    <div class="chips">
+      <span class="chip">并发上限：{{ settings.max_concurrent }}</span>
+      <span class="chip">日志保留：{{ settings.log_retention_days }} 天</span>
+      <span class="chip">任务超时：{{ settings.task_timeout }} 秒</span>
+      <span class="chip">代理：{{ settings.proxy_url if settings.proxy_url else "未配置" }}</span>
+      <span class="chip">文件缓存：{{ files_cache_ts|fmt_ts }}</span>
+    </div>
+  </div>
 
   <div class="row">
+    <!-- Create Task + Settings -->
     <div class="card">
       <h2>新建下载任务</h2>
       <form method="post" action="/tasks">
         <label>视频 URL</label>
         <input name="url" placeholder="https://..." required />
 
-        <div style="height:12px"></div>
-
         <label>额外参数（可选）</label>
-        <textarea name="extra_args" rows="3" placeholder='例如：-a 2 -g 1 或 -p "http://127.0.0.1:7890"'></textarea>
-        <p class="muted">这里会直接拼到 <code>videodl -i URL</code> 后面。</p>
+        <textarea name="extra_args" rows="3" placeholder='例如：-a 2 -g 1 （不建议填写输出路径参数）'></textarea>
+        <div class="muted">参数会拼到 <code>videodl -i URL</code> 后面（已做安全过滤，阻止明显路径逃逸）。</div>
 
-        <button type="submit">开始下载</button>
+        <div class="checkline">
+          <input id="use_proxy" type="checkbox" name="use_proxy" />
+          <label for="use_proxy" style="margin:0; color:var(--text);">启用代理（使用下方“运行设置”中的全局代理）</label>
+        </div>
+
+        <div style="height:10px"></div>
+        <button class="btn" type="submit">加入队列 / 开始下载</button>
+      </form>
+
+      <div class="line"></div>
+
+      <h2>运行设置</h2>
+      <form method="post" action="/settings">
+        <div class="grid2">
+          <div>
+            <label>并发上限</label>
+            <input name="max_concurrent" type="number" min="1" value="{{ settings.max_concurrent }}" required />
+          </div>
+          <div>
+            <label>日志保留天数（清理 run.log）</label>
+            <input name="log_retention_days" type="number" min="1" value="{{ settings.log_retention_days }}" required />
+          </div>
+          <div>
+            <label>单任务超时（秒）</label>
+            <input name="task_timeout" type="number" min="60" value="{{ settings.task_timeout }}" required />
+          </div>
+          <div>
+            <label>全局代理（http/https/socks5）</label>
+            <input name="proxy_url" placeholder="例如：http://127.0.0.1:7890" value="{{ settings.proxy_url }}" />
+          </div>
+        </div>
+
+        <div style="height:10px"></div>
+        <button class="btn secondary" type="submit">保存设置</button>
+        <div class="muted" style="margin-top:8px;">设置保存后立即生效；任务勾选“启用代理”才会使用该代理。</div>
       </form>
     </div>
 
+    <!-- Tasks -->
     <div class="card">
       <h2>任务列表</h2>
       <table>
         <thead>
-          <tr><th>ID</th><th>状态</th><th>URL</th></tr>
+          <tr>
+            <th style="width:140px;">ID</th>
+            <th style="width:92px;">状态</th>
+            <th>URL</th>
+            <th style="width:190px;">操作</th>
+          </tr>
         </thead>
         <tbody>
         {% for t in tasks %}
           <tr>
             <td><a href="/tasks/{{ t.id }}">{{ t.id }}</a></td>
             <td>
-              {% set cls = "" %}
-              {% if t.status == "success" %}{% set cls="badge success" %}
-              {% elif t.status == "failed" %}{% set cls="badge failed" %}
-              {% elif t.status == "running" %}{% set cls="badge running" %}
-              {% else %}{% set cls="badge" %}
+              {% if t.status == "success" %}
+                <span class="badge b-ok">success</span>
+              {% elif t.status == "failed" %}
+                <span class="badge b-bad">failed</span>
+              {% elif t.status == "running" %}
+                <span class="badge b-run">running</span>
+              {% elif t.status == "queued" %}
+                <span class="badge b-q">queued</span>
+              {% elif t.status == "stopped" %}
+                <span class="badge b-stop">stopped</span>
+              {% else %}
+                <span class="badge">{{ t.status }}</span>
               {% endif %}
-              <span class="{{ cls }}">{{ t.status }}</span>
+              {% if t.use_proxy %}<div class="muted">proxy</div>{% endif %}
             </td>
-            <td style="max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-              {{ t.url }}
+            <td class="urlcell" title="{{ t.url }}">{{ t.url }}</td>
+            <td>
+              <div class="actions">
+                <a class="btn small secondary" href="/tasks/{{ t.id }}">详情</a>
+
+                <form method="post" action="/tasks/{{ t.id }}/delete" onsubmit="return confirm('确定删除任务记录？');" style="display:inline;">
+                  <input type="hidden" name="delete_downloads" value="0" />
+                  <button class="btn small danger" type="submit">删任务</button>
+                </form>
+
+                <form method="post" action="/tasks/{{ t.id }}/delete" onsubmit="return confirm('确定删除任务 + 同时删除该任务下载目录？');" style="display:inline;">
+                  <input type="hidden" name="delete_downloads" value="1" />
+                  <button class="btn small danger" type="submit">删任务+文件</button>
+                </form>
+              </div>
             </td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
+      <div class="muted" style="margin-top:10px;">
+        并发上限以内任务会自动开始；超过上限的任务会 queued，等待调度。
+      </div>
     </div>
 
+    <!-- Files -->
     <div class="card">
       <h2>已下载文件</h2>
+      <div class="muted">
+        文件缓存更新时间：<b>{{ files_cache_ts|fmt_ts }}</b>（后台每 10 分钟刷新；页面也每 10 分钟自动刷新）
+      </div>
+
+      <div style="height:10px"></div>
+
       <table>
         <thead>
-          <tr><th>文件</th><th>大小</th><th>操作</th></tr>
+          <tr>
+            <th>路径</th>
+            <th style="width:120px;">大小</th>
+            <th style="width:160px;">操作</th>
+          </tr>
         </thead>
         <tbody>
         {% for f in files %}
           <tr>
-            <td style="max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-              <a href="/files/{{ f.name }}">{{ f.name }}</a>
-              <div class="muted">mtime: {{ f.mtime }}</div>
+            <td class="urlcell" title="{{ f.path }}">
+              <a href="/files/{{ f.path }}">{{ f.path }}</a>
+              <div class="muted">mtime: {{ f.mtime|fmt_ts }}</div>
             </td>
-            <td>{{ f.size }}</td>
+            <td>{{ f.size|fmt_bytes }}</td>
             <td>
-              <form method="post" action="/files/{{ f.name }}/delete" onsubmit="return confirm('确定删除？');">
-                <button type="submit">删除</button>
+              <form method="post" action="/files/{{ f.path }}/delete" onsubmit="return confirm('确定删除该文件？');">
+                <button class="btn small danger" type="submit">删除文件</button>
               </form>
             </td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
+
+      <div style="height:10px"></div>
+      <button class="btn small secondary" onclick="forceRefreshFiles()">立即刷新文件列表</button>
     </div>
   </div>
+
+<script>
+  async function forceRefreshFiles(){
+    try{
+      await fetch("/files/refresh", { method: "POST" });
+      location.reload();
+    }catch(e){}
+  }
+  // 10分钟自动刷新（解决删除后列表不更新）
+  setInterval(forceRefreshFiles, 600000);
+</script>
 </body>
 </html>
