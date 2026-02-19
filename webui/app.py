@@ -14,7 +14,6 @@ from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
-
 # ----------------------------
 # Config
 # ----------------------------
@@ -53,8 +52,10 @@ FILES_REFRESH_SECONDS = 600      # 10分钟刷新文件缓存
 CLEANUP_CHECK_SECONDS = 3600     # 1小时检查一次清理
 SCHEDULER_TICK_SECONDS = 2       # 队列调度轮询间隔
 
+PAGE_SIZE = 10                   # index 分页每页条数
+
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
-app = FastAPI(title="VideoDL WebUI", version="0.7.0")
+app = FastAPI(title="VideoDL WebUI", version="0.7.1")
 
 # 最终成品常见扩展（你可按需增减）
 ALLOWED_DOWNLOAD_EXTS = {
@@ -156,6 +157,12 @@ def _safe_join_under(base_dir: str, rel_path: str) -> str:
     return full
 
 
+def _is_under(base_dir: str, p: str) -> bool:
+    base_abs = os.path.abspath(base_dir)
+    full = os.path.abspath(p)
+    return full == base_abs or full.startswith(base_abs + os.sep)
+
+
 def _validate_proxy_url(proxy_url: str) -> str:
     proxy_url = (proxy_url or "").strip()
     if not proxy_url:
@@ -164,7 +171,6 @@ def _validate_proxy_url(proxy_url: str) -> str:
         raise HTTPException(status_code=400, detail="Proxy URL contains whitespace")
     if len(proxy_url) > 300:
         raise HTTPException(status_code=400, detail="Proxy URL too long")
-    # allow common proxy schemes
     if not re.match(r"^(http|https|socks5|socks5h)://", proxy_url, re.IGNORECASE):
         raise HTTPException(status_code=400, detail="Proxy URL must start with http(s):// or socks5(h)://")
     return proxy_url
@@ -191,7 +197,6 @@ def load_settings() -> Dict[str, Any]:
         merged["task_timeout"] = max(60, int(merged.get("task_timeout", DEFAULT_SETTINGS["task_timeout"])))
         merged["proxy_url"] = str(merged.get("proxy_url", "") or "").strip()
 
-        # write back normalized
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(merged, f, ensure_ascii=False, indent=2)
         return merged
@@ -212,6 +217,37 @@ def save_settings(new_values: Dict[str, Any]) -> Dict[str, Any]:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(cur, f, ensure_ascii=False, indent=2)
     return cur
+
+
+def _get_videodl_version() -> str:
+    # 尽量用 pip 安装包版本（最稳定）
+    try:
+        from importlib.metadata import version as _pkg_version  # py>=3.8
+        return _pkg_version("videodl")
+    except Exception:
+        # fallback：尝试读取模块变量
+        try:
+            import videodl  # type: ignore
+            v = getattr(videodl, "__version__", "") or getattr(videodl, "version", "")
+            return str(v) if v else "unknown"
+        except Exception:
+            return "unknown"
+
+
+def _paginate(items: List[Any], page: int, page_size: int) -> Dict[str, Any]:
+    total = len(items)
+    page_size = max(1, int(page_size))
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(int(page), total_pages))
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "items": items[start:end],
+    }
 
 
 @dataclass
@@ -271,19 +307,20 @@ def refresh_files_cache(force: bool = False) -> Dict[str, Any]:
 
     items: List[Dict[str, Any]] = []
     base = os.path.abspath(DOWNLOAD_DIR)
+
     for root, _, files in os.walk(base):
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
 
-        # 只展示我们关心的成品扩展
+            # 只展示我们关心的成品扩展
             if ext not in ALLOWED_DOWNLOAD_EXTS:
                 continue
 
-        # 排除过程/临时扩展（双保险）
+            # 排除过程/临时扩展（双保险）
             if ext in DENY_EXTS:
                 continue
 
-        # 关键：过滤分片 mp4（不管它在哪个目录）
+            # 关键：过滤分片 mp4
             if ext == ".mp4" and SEGMENT_NAME_RE.match(fn):
                 continue
 
@@ -293,7 +330,7 @@ def refresh_files_cache(force: bool = False) -> Dict[str, Any]:
             except Exception:
                 continue
 
-        # 可选：过滤 0 字节文件（常见过程文件）
+            # 过滤 0 字节文件
             if st.st_size <= 0:
                 continue
 
@@ -357,6 +394,22 @@ def _parse_extra_args_safe(extra_args: str) -> List[str]:
     return cleaned
 
 
+def _cleanup_temp_for_stopped_task(meta: TaskMeta) -> None:
+    """
+    用户手动停止任务时清理临时目录：
+    删除 <task_download_dir>/videodl_outputs 整棵树（包含中间分片、hash 目录等）。
+    """
+    if not meta.download_dir:
+        return
+    dd = meta.download_dir
+    if not _is_under(DOWNLOAD_DIR, dd):
+        # 安全兜底：只允许删除 DOWNLOAD_DIR 下内容
+        return
+    temp_root = os.path.join(dd, "videodl_outputs")
+    if os.path.isdir(temp_root):
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 # ----------------------------
 # Runner & Scheduler
 # ----------------------------
@@ -380,7 +433,6 @@ def _run_task(task_id: str):
         if meta.use_proxy:
             if not proxy_url:
                 raise RuntimeError("Task requires proxy, but global proxy_url is empty")
-            # prevent duplicate -p in extra args
             if "-p" not in extra and "--proxy" not in extra:
                 extra = ["-p", proxy_url] + extra
 
@@ -531,8 +583,21 @@ def _startup():
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     settings = load_settings()
-    tasks = list_tasks()
+    tasks_all = list_tasks()
     cache = refresh_files_cache(force=False)
+
+    # pagination
+    try:
+        task_page = int(request.query_params.get("task_page", "1"))
+    except Exception:
+        task_page = 1
+    try:
+        file_page = int(request.query_params.get("file_page", "1"))
+    except Exception:
+        file_page = 1
+
+    tasks_p = _paginate(tasks_all, task_page, PAGE_SIZE)
+    files_p = _paginate(cache["files"], file_page, PAGE_SIZE)
 
     return templates.TemplateResponse(
         "index.html",
@@ -540,11 +605,24 @@ def index(request: Request):
             "request": request,
             "download_dir": DOWNLOAD_DIR,
             "tasks_dir": TASKS_DIR,
-            "tasks": tasks,
-            "files": cache["files"],
+
+            "tasks": tasks_p["items"],
+            "tasks_page": tasks_p["page"],
+            "tasks_total_pages": tasks_p["total_pages"],
+            "tasks_total": tasks_p["total"],
+
+            "files": files_p["items"],
+            "files_page": files_p["page"],
+            "files_total_pages": files_p["total_pages"],
+            "files_total": files_p["total"],
+
             "files_cache_ts": cache["ts"],
             "settings": settings,
             "running_count": _get_running_count(),
+
+            # versions
+            "webui_version": app.version,
+            "videodl_version": _get_videodl_version(),
         },
     )
 
@@ -604,14 +682,19 @@ def stop_task(task_id: str):
     if meta.status not in ("running", "queued"):
         return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
+    # queued -> 直接标 stopped + 清临时（一般为空）
     if meta.status == "queued":
         meta.status = "stopped"
         meta.finished_at = _now_ts()
         save_task(meta)
         with _running_lock:
             running_tasks.discard(task_id)
+        # 清理临时
+        _cleanup_temp_for_stopped_task(meta)
+        refresh_files_cache(force=True)
         return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
+    # running -> 先停进程
     with _process_lock:
         proc = process_map.get(task_id)
     if proc:
@@ -626,11 +709,19 @@ def stop_task(task_id: str):
     meta.status = "stopped"
     meta.finished_at = _now_ts()
     save_task(meta)
+
+    # ✅ 关键：手动停止后自动清理临时目录（videodl_outputs/**）
+    _cleanup_temp_for_stopped_task(meta)
+    refresh_files_cache(force=True)
+
     return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
 
 @app.post("/tasks/{task_id}/delete")
 def delete_task(task_id: str, delete_downloads: str = Form("0")):
+    """
+    delete_downloads=1 时：删除整个任务下载目录（如 DOWNLOAD_DIR/<task_id>/）包含目录本身。
+    """
     try:
         meta = load_task(task_id)
     except Exception:
@@ -651,13 +742,15 @@ def delete_task(task_id: str, delete_downloads: str = Form("0")):
     with _running_lock:
         running_tasks.discard(task_id)
 
+    # 删除任务记录目录（tasks/<task_id>/）
     tp = _task_path(task_id)
     if os.path.isdir(tp):
         shutil.rmtree(tp, ignore_errors=True)
 
-    if meta and str(delete_downloads).strip() == "1":
-        dd = meta.download_dir or os.path.join(DOWNLOAD_DIR, task_id)
-        if os.path.isdir(dd):
+    # 删除任务下载目录（downloads/<task_id>/）
+    if str(delete_downloads).strip() == "1":
+        dd = (meta.download_dir if (meta and meta.download_dir) else os.path.join(DOWNLOAD_DIR, task_id))
+        if _is_under(DOWNLOAD_DIR, dd) and os.path.isdir(dd):
             shutil.rmtree(dd, ignore_errors=True)
         refresh_files_cache(force=True)
 
@@ -716,7 +809,15 @@ def delete_file(filepath: str):
 @app.get("/health")
 def health():
     settings = load_settings()
-    return {"ok": True, "download_dir": DOWNLOAD_DIR, "tasks_dir": TASKS_DIR, "settings": settings, "running": _get_running_count()}
+    return {
+        "ok": True,
+        "download_dir": DOWNLOAD_DIR,
+        "tasks_dir": TASKS_DIR,
+        "settings": settings,
+        "running": _get_running_count(),
+        "webui_version": app.version,
+        "videodl_version": _get_videodl_version(),
+    }
 
 
 if __name__ == "__main__":
