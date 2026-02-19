@@ -410,6 +410,40 @@ def _cleanup_temp_for_stopped_task(meta: TaskMeta) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def _build_task_env(use_proxy: bool, proxy_url: str) -> Dict[str, str]:
+    """
+    方案二：每个任务可控代理，通过 env 注入给子进程。
+    - 勾选 use_proxy：设置 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY（同时设置小写版本）
+    - 未勾选：移除这些变量，避免继承默认代理
+    """
+    env = os.environ.copy()
+
+    # 先清理（避免宿主/容器默认代理“泄漏”到不需要代理的任务）
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+              "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        env.pop(k, None)
+
+    if use_proxy:
+        proxy_url = _validate_proxy_url(proxy_url)
+        if not proxy_url:
+            raise RuntimeError("Task requires proxy, but global proxy_url is empty")
+
+        # urllib / requests / 许多工具均会读取这些变量
+        env["HTTP_PROXY"] = proxy_url
+        env["HTTPS_PROXY"] = proxy_url
+        env["ALL_PROXY"] = proxy_url
+
+        # 兼容部分只读小写的实现
+        env["http_proxy"] = proxy_url
+        env["https_proxy"] = proxy_url
+        env["all_proxy"] = proxy_url
+
+        # 你也可以在这里设置 NO_PROXY（如内网域名），目前默认不设置
+        # env["NO_PROXY"] = "localhost,127.0.0.1"
+
+    return env
+
+
 # ----------------------------
 # Runner & Scheduler
 # ----------------------------
@@ -429,12 +463,8 @@ def _run_task(task_id: str):
     try:
         extra = _parse_extra_args_safe(meta.extra_args)
 
-        # proxy option (per task)
-        if meta.use_proxy:
-            if not proxy_url:
-                raise RuntimeError("Task requires proxy, but global proxy_url is empty")
-            if "-p" not in extra and "--proxy" not in extra:
-                extra = ["-p", proxy_url] + extra
+        # ✅ 方案二：不再拼 -p / -r，代理通过 env 注入给子进程
+        env = _build_task_env(meta.use_proxy, proxy_url)
 
         videodl_bin = os.getenv("VIDEODL_BIN", "videodl")
         cmd = [videodl_bin, "-i", meta.url] + extra
@@ -444,6 +474,7 @@ def _run_task(task_id: str):
         _write_log(task_id, f"[webui] use_proxy={meta.use_proxy}")
         if meta.use_proxy:
             _write_log(task_id, f"[webui] proxy_url={proxy_url}")
+            _write_log(task_id, "[webui] proxy_mode=env(HTTP_PROXY/HTTPS_PROXY/ALL_PROXY)")
         _write_log(task_id, f"[webui] cmd={' '.join(cmd)}")
         _write_log(task_id, f"[webui] TASK_TIMEOUT={timeout}s")
 
@@ -454,6 +485,7 @@ def _run_task(task_id: str):
             stderr=subprocess.STDOUT,
             cwd=meta.download_dir,   # per-task dir avoids collisions
             text=True,
+            env=env,                 # ✅ 注入任务环境（代理在这里生效）
         )
         if os.name != "nt":
             popen_kwargs["preexec_fn"] = os.setsid
