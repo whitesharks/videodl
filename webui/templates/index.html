@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>VideoDL WebUI</title>
+  <style>
+    body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial; margin: 24px; }
+    .row { display:flex; gap: 16px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; min-width: 320px; flex: 1; }
+    input, textarea { width: 100%; padding: 10px; border:1px solid #ccc; border-radius: 10px; }
+    button { padding: 10px 14px; border:0; border-radius: 10px; cursor:pointer; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { text-align:left; padding: 8px; border-bottom:1px solid #eee; }
+    .muted { color:#666; font-size: 12px; }
+    .badge { display:inline-block; padding:2px 8px; border-radius: 999px; background:#f2f2f2; font-size: 12px; }
+    .success { background: #e8f7ee; }
+    .failed { background: #fdecec; }
+    .running { background: #eef6ff; }
+  </style>
+</head>
+<body>
+  <h1>VideoDL WebUI</h1>
+  <p class="muted">下载目录：<code>{{ download_dir }}</code></p>
+
+  <div class="row">
+    <div class="card">
+      <h2>新建下载任务</h2>
+      <form method="post" action="/tasks">
+        <label>视频 URL</label>
+        <input name="url" placeholder="https://..." required />
+
+        <div style="height:12px"></div>
+
+        <label>额外参数（可选）</label>
+        <textarea name="extra_args" rows="3" placeholder='例如：-a 2 -g 1 或 -p "http://127.0.0.1:7890"'></textarea>
+        <p class="muted">这里会直接拼到 <code>videodl -i URL</code> 后面。</p>
+
+        <button type="submit">开始下载</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>任务列表</h2>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>状态</th><th>URL</th></tr>
+        </thead>
+        <tbody>
+        {% for t in tasks %}
+          <tr>
+            <td><a href="/tasks/{{ t.id }}">{{ t.id }}</a></td>
+            <td>
+              {% set cls = "" %}
+              {% if t.status == "success" %}{% set cls="badge success" %}
+              {% elif t.status == "failed" %}{% set cls="badge failed" %}
+              {% elif t.status == "running" %}{% set cls="badge running" %}
+              {% else %}{% set cls="badge" %}
+              {% endif %}
+              <span class="{{ cls }}">{{ t.status }}</span>
+            </td>
+            <td style="max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+              {{ t.url }}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>已下载文件</h2>
+      <table>
+        <thead>
+          <tr><th>文件</th><th>大小</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+        {% for f in files %}
+          <tr>
+            <td style="max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+              <a href="/files/{{ f.name }}">{{ f.name }}</a>
+              <div class="muted">mtime: {{ f.mtime }}</div>
+            </td>
+            <td>{{ f.size }}</td>
+            <td>
+              <form method="post" action="/files/{{ f.name }}/delete" onsubmit="return confirm('确定删除？');">
+                <button type="submit">删除</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>
