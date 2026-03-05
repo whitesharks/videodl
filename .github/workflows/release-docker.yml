@@ -29,7 +29,8 @@ env:
   # 例如：whiteshark/videodl-webui
   DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/videodl-webui
 
-  PLATFORMS: linux/amd64,linux/arm64
+  # 【优化项】：去掉了 linux/arm64，避免 QEMU 模拟导致 18 分钟以上的龟速构建。如果确实需要树莓派支持，可改回 linux/amd64,linux/arm64
+  PLATFORMS: linux/amd64
   UPSTREAM_REPO: CharlesPikachu/videodl
   WEBUI_PORT: "61771"
 
@@ -104,7 +105,7 @@ jobs:
               DOWNLOAD_DIR=/data/downloads \
               TASKS_DIR=/data/tasks
 
-          # System deps: ffmpeg + node + curl/jq for downloading tools
+          # 安装基础依赖
           RUN apt-get update && apt-get install -y --no-install-recommends \
                 ffmpeg \
                 ca-certificates \
@@ -112,11 +113,9 @@ jobs:
                 jq \
                 git \
                 nodejs \
-                npm \
               && rm -rf /var/lib/apt/lists/*
 
-          # Install N_m3u8DL-RE (latest) for amd64/arm64
-          # Note: asset naming may vary across releases; we match common patterns.
+          # 安装 N_m3u8DL-RE (精简写法)
           RUN set -eux; \
               arch="$(dpkg --print-architecture)"; \
               case "$arch" in \
@@ -126,43 +125,34 @@ jobs:
               esac; \
               api="https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest"; \
               url="$(curl -fsSL "$api" | jq -r --arg re "$asset_pat" '.assets[] | select(.name|test($re;"i")) | .browser_download_url' | head -n 1)"; \
-              if [ -z "$url" ] || [ "$url" = "null" ]; then \
-                echo "Failed to resolve N_m3u8DL-RE asset for $arch"; \
-                exit 1; \
-              fi; \
-              echo "Downloading N_m3u8DL-RE: $url"; \
-              mkdir -p /opt/tools; \
-              curl -fsSL "$url" -o /opt/tools/N_m3u8DL-RE; \
-              chmod +x /opt/tools/N_m3u8DL-RE; \
-              ln -sf /opt/tools/N_m3u8DL-RE /usr/local/bin/N_m3u8DL-RE
+              curl -fsSL "$url" -o /usr/local/bin/N_m3u8DL-RE; \
+              chmod +x /usr/local/bin/N_m3u8DL-RE
 
-          # Copy your fork repo (webui + requirements)
           WORKDIR /opt/app
           COPY . /opt/app
 
-          # Cache-bust hooks (no-op but forces rebuild when these change)
+          # Cache-bust hooks
           RUN echo "UPSTREAM_REPO=$UPSTREAM_REPO" && echo "UPSTREAM_SHA=$UPSTREAM_SHA" && \
               echo "REQS_SHA_VIDEODL=$REQS_SHA_VIDEODL" && echo "REQS_SHA_WEBUI=$REQS_SHA_WEBUI"
 
-          # Install upstream videodl from latest commit SHA
-          # Use SHA to guarantee "latest upstream" per workflow resolution.
+          # 【核心优化区】：合并所有安装和清理动作，并移除了内部注释防止 bash 截断报错
           RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-              pip install --no-cache-dir "git+https://github.com/${UPSTREAM_REPO}.git@${UPSTREAM_SHA}"
+              pip install --no-cache-dir "git+https://github.com/${UPSTREAM_REPO}.git@${UPSTREAM_SHA}" && \
+              if [ -f /opt/app/requirements.txt ]; then pip install --no-cache-dir -r /opt/app/requirements.txt; fi && \
+              if [ -f /opt/app/webui/requirements-web.txt ]; then pip install --no-cache-dir -r /opt/app/webui/requirements-web.txt; fi && \
+              PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/ playwright install chromium && \
+              playwright install-deps chromium && \
+              apt-get clean && \
+              rm -rf /var/lib/apt/lists/* && \
+              apt-get purge -y git jq && \
+              apt-get autoremove -y && \
+              rm -rf /root/.cache/pip /tmp/* /var/tmp/*
 
-          # Install extra python deps:
-          # 1) repo root requirements.txt (if you keep extra deps there)
-          # 2) webui requirements
-          RUN if [ -f /opt/app/requirements.txt ]; then pip install --no-cache-dir -r /opt/app/requirements.txt; fi && \
-              if [ -f /opt/app/webui/requirements-web.txt ]; then pip install --no-cache-dir -r /opt/app/webui/requirements-web.txt; fi
-
-          # Prepare runtime dirs (mount points)
           RUN mkdir -p /data/downloads /data/tasks
 
-          # Run WebUI
           WORKDIR /opt/app/webui
           EXPOSE 61771
 
-          # Uvicorn access logs 可按需关：--access-log=false
           CMD ["python", "app.py"]
           EOF
 
