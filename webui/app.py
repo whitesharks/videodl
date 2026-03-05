@@ -7,12 +7,91 @@ import shutil
 import subprocess
 import threading
 import shlex
+import sys
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, FileResponse
 from fastapi.templating import Jinja2Templates
+
+# ----------------------------
+# Wrapper Script for File Name Length Fix (Errno 36)
+# ----------------------------
+WRAPPER_CODE = """
+import sys, os, builtins, runpy, shutil
+MAX_FILENAME_BYTES = 240
+
+_orig_join = os.path.join
+_orig_split = os.path.split
+_orig_splitext = os.path.splitext
+_orig_open = builtins.open
+_orig_rename = os.rename
+_orig_makedirs = os.makedirs
+_orig_stat = os.stat
+_orig_exists = os.path.exists
+
+def truncate_path(p):
+    if not isinstance(p, str): return p
+    dirname, basename = _orig_split(p)
+    if len(basename.encode('utf-8', errors='ignore')) > MAX_FILENAME_BYTES:
+        name, ext = _orig_splitext(basename)
+        while len((name + ext).encode('utf-8', errors='ignore')) > MAX_FILENAME_BYTES:
+            if not name: break
+            name = name[:-1]
+        return _orig_join(dirname, name + ext)
+    return p
+
+def _patched_open(file, *args, **kwargs):
+    return _orig_open(truncate_path(file), *args, **kwargs)
+builtins.open = _patched_open
+
+def _patched_join(a, *p):
+    res = _orig_join(a, *p)
+    return truncate_path(res)
+os.path.join = _patched_join
+
+def _patched_rename(src, dst, *args, **kwargs):
+    return _orig_rename(truncate_path(src), truncate_path(dst), *args, **kwargs)
+os.rename = _patched_rename
+
+def _patched_makedirs(name, mode=0o777, exist_ok=False):
+    return _orig_makedirs(truncate_path(name), mode, exist_ok)
+os.makedirs = _patched_makedirs
+
+def _patched_stat(path, *args, **kwargs):
+    return _orig_stat(truncate_path(path), *args, **kwargs)
+os.stat = _patched_stat
+
+def _patched_exists(path):
+    return _orig_exists(truncate_path(path))
+os.path.exists = _patched_exists
+
+if hasattr(os, 'replace'):
+    _orig_replace = os.replace
+    def _patched_replace(src, dst, *args, **kwargs):
+        return _orig_replace(truncate_path(src), truncate_path(dst), *args, **kwargs)
+    os.replace = _patched_replace
+
+if hasattr(os, 'open'):
+    _orig_os_open = os.open
+    def _patched_os_open(path, flags, mode=0o777, *args, **kwargs):
+        return _orig_os_open(truncate_path(path), flags, mode, *args, **kwargs)
+    os.open = _patched_os_open
+
+videodl_bin = shutil.which('videodl')
+if not videodl_bin:
+    try:
+        from videodl import videodl
+        client = videodl.VideoClient()
+        client.startparseurlcmdui()
+        sys.exit(0)
+    except ImportError:
+        sys.exit("videodl executable or module not found")
+sys.argv[0] = videodl_bin
+runpy.run_path(videodl_bin, run_name='__main__')
+"""
+
 
 # ----------------------------
 # Config
@@ -220,14 +299,12 @@ def save_settings(new_values: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _get_videodl_version() -> str:
-    # 尽量用 pip 安装包版本（最稳定）
     try:
-        from importlib.metadata import version as _pkg_version  # py>=3.8
+        from importlib.metadata import version as _pkg_version
         return _pkg_version("videodl")
     except Exception:
-        # fallback：尝试读取模块变量
         try:
-            import videodl  # type: ignore
+            import videodl
             v = getattr(videodl, "__version__", "") or getattr(videodl, "version", "")
             return str(v) if v else "unknown"
         except Exception:
@@ -261,7 +338,7 @@ class TaskMeta:
     finished_at: Optional[int] = None
     pid: Optional[int] = None
     returncode: Optional[int] = None
-    status: str = "queued"  # queued | running | success | failed | stopped
+    status: str = "queued"
     download_dir: Optional[str] = None
 
     def to_dict(self):
@@ -312,15 +389,12 @@ def refresh_files_cache(force: bool = False) -> Dict[str, Any]:
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
 
-            # 只展示我们关心的成品扩展
             if ext not in ALLOWED_DOWNLOAD_EXTS:
                 continue
 
-            # 排除过程/临时扩展（双保险）
             if ext in DENY_EXTS:
                 continue
 
-            # 关键：过滤分片 mp4
             if ext == ".mp4" and SEGMENT_NAME_RE.match(fn):
                 continue
 
@@ -330,7 +404,6 @@ def refresh_files_cache(force: bool = False) -> Dict[str, Any]:
             except Exception:
                 continue
 
-            # 过滤 0 字节文件
             if st.st_size <= 0:
                 continue
 
@@ -355,19 +428,7 @@ def _get_running_count() -> int:
         return len(running_tasks)
 
 
-# ----------------------------
-# Safety: extra args filtering
-# ----------------------------
 def _parse_extra_args_safe(extra_args: str) -> List[str]:
-    r"""
-    We do NOT use shell=True, so classic shell injection isn't possible.
-    But users could still pass path-escape style args (e.g., output to /etc, C:\, ../..).
-    We apply a conservative token filter:
-    - Reject tokens containing '..' (unless it's a URL with ://)
-    - Reject absolute path tokens (/xxx or \xxx)
-    - Reject Windows drive path tokens like C:\...
-    - Reject tokens with newlines
-    """
     if not extra_args:
         return []
     if any(ch in extra_args for ch in ["\n", "\r", "\x00"]):
@@ -395,15 +456,10 @@ def _parse_extra_args_safe(extra_args: str) -> List[str]:
 
 
 def _cleanup_temp_for_stopped_task(meta: TaskMeta) -> None:
-    """
-    用户手动停止任务时清理临时目录：
-    删除 <task_download_dir>/videodl_outputs 整棵树（包含中间分片、hash 目录等）。
-    """
     if not meta.download_dir:
         return
     dd = meta.download_dir
     if not _is_under(DOWNLOAD_DIR, dd):
-        # 安全兜底：只允许删除 DOWNLOAD_DIR 下内容
         return
     temp_root = os.path.join(dd, "videodl_outputs")
     if os.path.isdir(temp_root):
@@ -411,14 +467,8 @@ def _cleanup_temp_for_stopped_task(meta: TaskMeta) -> None:
 
 
 def _build_task_env(use_proxy: bool, proxy_url: str) -> Dict[str, str]:
-    """
-    方案二：每个任务可控代理，通过 env 注入给子进程。
-    - 勾选 use_proxy：设置 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY（同时设置小写版本）
-    - 未勾选：移除这些变量，避免继承默认代理
-    """
     env = os.environ.copy()
 
-    # 先清理（避免宿主/容器默认代理“泄漏”到不需要代理的任务）
     for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
               "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
         env.pop(k, None)
@@ -428,18 +478,13 @@ def _build_task_env(use_proxy: bool, proxy_url: str) -> Dict[str, str]:
         if not proxy_url:
             raise RuntimeError("Task requires proxy, but global proxy_url is empty")
 
-        # urllib / requests / 许多工具均会读取这些变量
         env["HTTP_PROXY"] = proxy_url
         env["HTTPS_PROXY"] = proxy_url
         env["ALL_PROXY"] = proxy_url
 
-        # 兼容部分只读小写的实现
         env["http_proxy"] = proxy_url
         env["https_proxy"] = proxy_url
         env["all_proxy"] = proxy_url
-
-        # 你也可以在这里设置 NO_PROXY（如内网域名），目前默认不设置
-        # env["NO_PROXY"] = "localhost,127.0.0.1"
 
     return env
 
@@ -462,12 +507,21 @@ def _run_task(task_id: str):
 
     try:
         extra = _parse_extra_args_safe(meta.extra_args)
-
-        # ✅ 方案二：不再拼 -p / -r，代理通过 env 注入给子进程
         env = _build_task_env(meta.use_proxy, proxy_url)
 
+        # 在执行目录写入 Wrapper 代码（如果尚未存在）
+        wrapper_script = os.path.join(TASKS_DIR, "videodl_wrapper.py")
+        if not os.path.exists(wrapper_script):
+            with open(wrapper_script, "w", encoding="utf-8") as f:
+                f.write(WRAPPER_CODE.strip())
+
         videodl_bin = os.getenv("VIDEODL_BIN", "videodl")
-        cmd = [videodl_bin, "-i", meta.url] + extra
+        
+        # 判断并使用自动截断包装脚本执行
+        if videodl_bin == "videodl":
+            cmd = [sys.executable, wrapper_script, "-i", meta.url] + extra
+        else:
+            cmd = [videodl_bin, "-i", meta.url] + extra
 
         _write_log(task_id, f"[webui] DOWNLOAD_DIR={DOWNLOAD_DIR}")
         _write_log(task_id, f"[webui] TASK_DOWNLOAD_DIR={meta.download_dir}")
@@ -483,9 +537,9 @@ def _run_task(task_id: str):
         popen_kwargs = dict(
             stdout=log_fp,
             stderr=subprocess.STDOUT,
-            cwd=meta.download_dir,   # per-task dir avoids collisions
+            cwd=meta.download_dir,
             text=True,
-            env=env,                 # ✅ 注入任务环境（代理在这里生效）
+            env=env,
         )
         if os.name != "nt":
             popen_kwargs["preexec_fn"] = os.setsid
@@ -552,7 +606,7 @@ def _scheduler_loop():
                 if not queued:
                     break
 
-                queued.sort(key=lambda x: x.created_at)  # FIFO
+                queued.sort(key=lambda x: x.created_at)
                 t = queued[0]
 
                 with _running_lock:
@@ -618,7 +672,6 @@ def index(request: Request):
     tasks_all = list_tasks()
     cache = refresh_files_cache(force=False)
 
-    # pagination
     try:
         task_page = int(request.query_params.get("task_page", "1"))
     except Exception:
@@ -652,7 +705,6 @@ def index(request: Request):
             "settings": settings,
             "running_count": _get_running_count(),
 
-            # versions
             "webui_version": app.version,
             "videodl_version": _get_videodl_version(),
         },
@@ -663,7 +715,7 @@ def index(request: Request):
 def create_task(
     url: str = Form(...),
     extra_args: str = Form(""),
-    use_proxy: Optional[str] = Form(None),  # checkbox -> "on"
+    use_proxy: Optional[str] = Form(None),
 ):
     task_id = _safe_id(f"t{_now_ts()}{os.getpid()}")
     meta = TaskMeta(
@@ -714,19 +766,16 @@ def stop_task(task_id: str):
     if meta.status not in ("running", "queued"):
         return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
-    # queued -> 直接标 stopped + 清临时（一般为空）
     if meta.status == "queued":
         meta.status = "stopped"
         meta.finished_at = _now_ts()
         save_task(meta)
         with _running_lock:
             running_tasks.discard(task_id)
-        # 清理临时
         _cleanup_temp_for_stopped_task(meta)
         refresh_files_cache(force=True)
         return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
-    # running -> 先停进程
     with _process_lock:
         proc = process_map.get(task_id)
     if proc:
@@ -742,7 +791,6 @@ def stop_task(task_id: str):
     meta.finished_at = _now_ts()
     save_task(meta)
 
-    # ✅ 关键：手动停止后自动清理临时目录（videodl_outputs/**）
     _cleanup_temp_for_stopped_task(meta)
     refresh_files_cache(force=True)
 
@@ -751,9 +799,6 @@ def stop_task(task_id: str):
 
 @app.post("/tasks/{task_id}/delete")
 def delete_task(task_id: str, delete_downloads: str = Form("0")):
-    """
-    delete_downloads=1 时：删除整个任务下载目录（如 DOWNLOAD_DIR/<task_id>/）包含目录本身。
-    """
     try:
         meta = load_task(task_id)
     except Exception:
@@ -774,12 +819,10 @@ def delete_task(task_id: str, delete_downloads: str = Form("0")):
     with _running_lock:
         running_tasks.discard(task_id)
 
-    # 删除任务记录目录（tasks/<task_id>/）
     tp = _task_path(task_id)
     if os.path.isdir(tp):
         shutil.rmtree(tp, ignore_errors=True)
 
-    # 删除任务下载目录（downloads/<task_id>/）
     if str(delete_downloads).strip() == "1":
         dd = (meta.download_dir if (meta and meta.download_dir) else os.path.join(DOWNLOAD_DIR, task_id))
         if _is_under(DOWNLOAD_DIR, dd) and os.path.isdir(dd):
