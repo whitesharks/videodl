@@ -28,7 +28,7 @@ env:
   # === 修改成你的 Docker Hub 镜像名 ===
   # 例如：whiteshark/videodl-webui
   DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/videodl-webui
-  # 【优化项】：去掉了 linux/arm64，避免 QEMU 模拟导致 18 分钟以上的龟速构建。如果确实需要树莓派支持，可改回 linux/amd64,linux/arm64
+
   PLATFORMS: linux/amd64
   UPSTREAM_REPO: CharlesPikachu/videodl
   WEBUI_PORT: "61771"
@@ -134,12 +134,12 @@ jobs:
           RUN echo "UPSTREAM_REPO=$UPSTREAM_REPO" && echo "UPSTREAM_SHA=$UPSTREAM_SHA" && \
               echo "REQS_SHA_VIDEODL=$REQS_SHA_VIDEODL" && echo "REQS_SHA_WEBUI=$REQS_SHA_WEBUI"
 
-          # 【核心优化区】：加入了 apt-get update -y，修复 playwright 缺少依赖目录导致构建失败的问题
+          # 【核心优化区】：去掉了 npmmirror，直接让 GitHub Actions 使用官方极速网络拉取 Chromium
           RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
               pip install --no-cache-dir "git+https://github.com/${UPSTREAM_REPO}.git@${UPSTREAM_SHA}" && \
               if [ -f /opt/app/requirements.txt ]; then pip install --no-cache-dir -r /opt/app/requirements.txt; fi && \
               if [ -f /opt/app/webui/requirements-web.txt ]; then pip install --no-cache-dir -r /opt/app/webui/requirements-web.txt; fi && \
-              PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/ playwright install chromium && \
+              playwright install chromium && \
               apt-get update -y && \
               playwright install-deps chromium && \
               apt-get clean && \
