@@ -8,6 +8,7 @@ import subprocess
 import threading
 import shlex
 import sys
+import urllib.parse
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Any
 
@@ -134,7 +135,7 @@ SCHEDULER_TICK_SECONDS = 2       # 队列调度轮询间隔
 PAGE_SIZE = 10                   # index 分页每页条数
 
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
-app = FastAPI(title="VideoDL WebUI", version="0.7.1")
+app = FastAPI(title="VideoDL WebUI", version="0.7.2")
 
 # 最终成品常见扩展（你可按需增减）
 ALLOWED_DOWNLOAD_EXTS = {
@@ -193,9 +194,12 @@ def _fmt_bytes(n: Optional[int]) -> str:
             return f"{v:.2f} {u}"
     return f"{v:.2f} PiB"
 
+def _quote_url(path: str) -> str:
+    return urllib.parse.quote(path, safe="/")
 
 templates.env.filters["fmt_ts"] = _fmt_ts
 templates.env.filters["fmt_bytes"] = _fmt_bytes
+templates.env.filters["quote_url"] = _quote_url
 
 
 # ----------------------------
@@ -717,10 +721,14 @@ def create_task(
     extra_args: str = Form(""),
     use_proxy: Optional[str] = Form(None),
 ):
+    # 智能提取 URL
+    url_match = re.search(r"https?://[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]", url)
+    extracted_url = url_match.group(0) if url_match else url.strip()
+
     task_id = _safe_id(f"t{_now_ts()}{os.getpid()}")
     meta = TaskMeta(
         id=task_id,
-        url=url.strip(),
+        url=extracted_url,
         extra_args=(extra_args or "").strip(),
         created_at=_now_ts(),
         status="queued",
