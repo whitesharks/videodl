@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "额外发布一个自定义 tag（例如 v0.1.0），留空则只推 latest + date + upstreamsha"
+        description: "额外发布一个自定义 tag（例如 v0.1.0），留空则只推 latest"
         required: false
         default: ""
       upstream_ref:
@@ -59,9 +59,6 @@ jobs:
           echo "UPSTREAM_REF=${REF}" >> "$GITHUB_ENV"
           echo "UPSTREAM_SHA=${SHA}" >> "$GITHUB_ENV"
           echo "UPSTREAM_SHA_SHORT=${SHA:0:12}" >> "$GITHUB_ENV"
-
-          DATE_TAG="$(date -u +%Y%m%d)"
-          echo "DATE_TAG=${DATE_TAG}" >> "$GITHUB_ENV"
 
           echo "Upstream: ${{ env.UPSTREAM_REPO }} @ ${REF} (${SHA})"
 
@@ -176,8 +173,6 @@ jobs:
         with:
           images: ${{ env.DOCKERHUB_IMAGE }}
           tags: |
-            type=raw,value=${{ env.DATE_TAG }}
-            type=raw,value=upstream-${{ env.UPSTREAM_SHA_SHORT }}
             type=raw,value=${{ github.event.inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag != '' }}
             type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event.inputs.push_latest == 'true' }}
           labels: |
