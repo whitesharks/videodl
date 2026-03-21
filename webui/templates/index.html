@@ -121,12 +121,11 @@
   </div>
 
   <div class="row">
-    <!-- Create Task + Settings -->
     <div class="card">
       <h2>新建下载任务</h2>
       <form method="post" action="/tasks">
         <label>视频 URL</label>
-        <input name="url" placeholder="https://..." required />
+        <input name="url" placeholder="https://... 或粘贴包含链接的整段文本" required />
 
         <label>额外参数（可选）</label>
         <textarea name="extra_args" rows="3" placeholder='例如：-a 2 -g 1 （不建议填写输出路径参数）'></textarea>
@@ -178,7 +177,6 @@
       </form>
     </div>
 
-    <!-- Tasks -->
     <div class="card">
       <h2>任务列表</h2>
       <table>
@@ -238,7 +236,6 @@
       </div>
     </div>
 
-    <!-- Files -->
     <div class="card">
       <h2>已下载文件</h2>
       <div class="muted">
@@ -259,12 +256,12 @@
         {% for f in files %}
           <tr>
             <td class="urlcell" title="{{ f.path }}">
-              <a href="/files/{{ f.path }}">{{ f.path }}</a>
+              <a href="/files/{{ f.path|quote_url }}">{{ f.path }}</a>
               <div class="muted">mtime: {{ f.mtime|fmt_ts }}</div>
             </td>
             <td>{{ f.size|fmt_bytes }}</td>
             <td>
-              <form method="post" action="/files/{{ f.path }}/delete" onsubmit="return confirm('确定删除该文件？');">
+              <form method="post" action="/files/{{ f.path|quote_url }}/delete" onsubmit="return confirm('确定删除该文件？');">
                 <button class="btn small danger" type="submit">删除文件</button>
               </form>
             </td>
@@ -289,7 +286,6 @@
     </div>
   </div>
 
-  <!-- Delete modal -->
   <div id="modalBackdrop" class="modal-backdrop" onclick="onBackdropClick(event)">
     <div class="modal" onclick="event.stopPropagation()">
       <h3>删除任务</h3>
