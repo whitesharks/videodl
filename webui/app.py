@@ -20,7 +20,8 @@ from fastapi.templating import Jinja2Templates
 # Wrapper Script for File Name Length Fix (Errno 36)
 # ----------------------------
 WRAPPER_CODE = """
-import sys, os, builtins, runpy, shutil
+import sys, os, builtins, shutil
+
 MAX_FILENAME_BYTES = 240
 
 _orig_join = os.path.join
@@ -81,16 +82,21 @@ if hasattr(os, 'open'):
     os.open = _patched_os_open
 
 videodl_bin = shutil.which('videodl')
-if not videodl_bin:
+
+# 双端兼容逻辑：
+# 在 Linux/Docker 环境下，videodl_bin 是一个纯文本 Python 脚本文件，使用 runpy 执行最佳
+# 在 Windows 环境下，videodl_bin 是 pip 生成的二进制 .exe，不能用 runpy 加载，因此降级使用官方入口函数
+if videodl_bin and not videodl_bin.lower().endswith('.exe'):
+    import runpy
+    sys.argv[0] = videodl_bin
+    runpy.run_path(videodl_bin, run_name='__main__')
+else:
     try:
-        from videodl import videodl
-        client = videodl.VideoClient()
-        client.startparseurlcmdui()
-        sys.exit(0)
+        from videodl.videodl import VideoClientCMD
+        sys.argv[0] = 'videodl'
+        sys.exit(VideoClientCMD())
     except ImportError:
-        sys.exit("videodl executable or module not found")
-sys.argv[0] = videodl_bin
-runpy.run_path(videodl_bin, run_name='__main__')
+        sys.exit("Error: videodl executable or module not found, or direct module import failed.")
 """
 
 
@@ -194,8 +200,10 @@ def _fmt_bytes(n: Optional[int]) -> str:
             return f"{v:.2f} {u}"
     return f"{v:.2f} PiB"
 
+
 def _quote_url(path: str) -> str:
     return urllib.parse.quote(path, safe="/")
+
 
 templates.env.filters["fmt_ts"] = _fmt_ts
 templates.env.filters["fmt_bytes"] = _fmt_bytes
@@ -513,11 +521,10 @@ def _run_task(task_id: str):
         extra = _parse_extra_args_safe(meta.extra_args)
         env = _build_task_env(meta.use_proxy, proxy_url)
 
-        # 在执行目录写入 Wrapper 代码（如果尚未存在）
+        # 在执行目录写入 Wrapper 代码（强制覆盖，保证更新脚本能生效旧任务目录）
         wrapper_script = os.path.join(TASKS_DIR, "videodl_wrapper.py")
-        if not os.path.exists(wrapper_script):
-            with open(wrapper_script, "w", encoding="utf-8") as f:
-                f.write(WRAPPER_CODE.strip())
+        with open(wrapper_script, "w", encoding="utf-8") as f:
+            f.write(WRAPPER_CODE.strip())
 
         videodl_bin = os.getenv("VIDEODL_BIN", "videodl")
         
@@ -670,6 +677,16 @@ def _startup():
 # ----------------------------
 # Routes
 # ----------------------------
+from fastapi.responses import FileResponse
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    favicon_path = os.path.join(os.path.dirname(__file__), "favicon.ico")
+    if os.path.exists(favicon_path):
+        return FileResponse(favicon_path)
+    # 如果没找到文件，返回空内容避免控制台无谓报错
+    return PlainTextResponse("", status_code=204)
+    
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     settings = load_settings()
